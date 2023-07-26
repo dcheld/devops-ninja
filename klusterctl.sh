@@ -33,7 +33,7 @@ function __create-nsg(){
         --nsg-name $NSG_NAME \
         --name AllowAnySSHInbound \
         --priority 110 \
-        --source-address-prefixes `curl ifconfig.me` \
+        --source-address-prefixes `curl -s ifconfig.me` \
         --destination-port-ranges 22 \
         --access Allow \
         --protocol Tcp
