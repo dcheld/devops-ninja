@@ -94,7 +94,7 @@ function _create() {
     __create-subnet
 
     __create-master-vms &
-    __create-work-vms &
+    # __create-work-vms &
     wait
 }
 
@@ -107,7 +107,8 @@ function _delete() {
 }
 
 function _deallocate-vms() {
-    for name in $(__get-vm-names);
+    local vm_names=${@:-`__get-vm-names`}
+    for name in ${vm_names};
     do
         az vm deallocate -g $RESOURCE_GROUP_NAME -n "${name}" &
     done
@@ -115,7 +116,8 @@ function _deallocate-vms() {
 }
 
 function _start-vms() {
-    for name in $(__get-vm-names);
+    local vm_names=${@:-`__get-vm-names`}
+    for name in ${vm_names};
     do
         az vm start -g $RESOURCE_GROUP_NAME -n "${name}" &
     done
