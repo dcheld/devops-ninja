@@ -87,16 +87,43 @@ function __get-vm-names () {
     echo "${VM_MASTER_NAME}"
 }
 
+function __vm-script-config(){
+    scripts=$(cat $SCRIPT_DIR/vm/common/*.sh | gzip -9 | base64 -w 0)
+    cat <<< "{ \"script\": \"${scripts}\"} "
+}
+
+function __vm-extension-set(){
+    local script=$(__vm-script-config)
+    local vm_names=${1:-`__get-vm-names`}
+    for vm_name in ${vm_names}
+    do
+        $(
+            az vm extension set \
+                -g $RESOURCE_GROUP_NAME \
+                -n 'customScript' \
+                --vm-name $vm_name \
+                --publisher Microsoft.Azure.Extensions \
+                --protected-settings "${script}";
+
+            az vm restart -g $RESOURCE_GROUP_NAME -n "${vm_name}" 
+        )&
+    done
+    wait
+}
+
 function _create() {
     __create-resource
     __create-nsg
     __create-vnet
     __create-subnet
 
-    __create-master-vms &
+    __create-master-vms 
     # __create-work-vms &
     wait
+    __vm-extension-set 'k8s-serve'
 }
+
+
 
 function _delete() {
     az group delete \
