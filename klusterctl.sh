@@ -79,37 +79,69 @@ function __create-work-vms() {
 
 }
 
-function __get-vm-names () {
+function __get-ca-cert-hash(){
+   _ssh $VM_MASTER_NAME $VM_USERNAME -qn\
+        -t "openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt \
+            | openssl rsa -pubin -outform der 2>/dev/null \
+            | openssl dgst -sha256 -hex | sed 's/^.* //'" \
+        | tail -1
+}
+
+function __get-token(){
+    _ssh $VM_MASTER_NAME $VM_USERNAME "kubeadm token list -o jsonpath='{.token}'" \
+        | tail -1
+}
+
+function __get-vm-work-names () {
     for i in $(seq 0 $(expr $VM_COUNT - 1));
     do
         echo "${VM_WORK_NAME}${i}"
     done
+}
+
+function __get-vm-names () {
+    __get-vm-work-names
     echo "${VM_MASTER_NAME}"
 }
 
-function __vm-script-config(){
-    scripts=$(cat $SCRIPT_DIR/vm/common/*.sh | gzip -9 | base64 -w 0)
+function __vm-create-script(){
+    scripts=$(cat $1 | gzip -9 | base64 -w 0)
     cat <<< "{ \"script\": \"${scripts}\"} "
 }
 
-function __vm-extension-set(){
-    local script=$(__vm-script-config)
-    local vm_names=${1:-`__get-vm-names`}
-    for vm_name in ${vm_names}
-    do
-        $(
-            az vm extension set \
-                -g $RESOURCE_GROUP_NAME \
-                -n 'customScript' \
-                --vm-name $vm_name \
-                --publisher Microsoft.Azure.Extensions \
-                --protected-settings "${script}";
+function __vm-apply-startup-server(){
+    local script_path=$(mktemp)
+    cat $SCRIPT_DIR/vm/common/*.sh $SCRIPT_DIR/vm/server/*.sh >> $script_path
+    local script=$(__vm-create-script $script_path)
 
-            az vm restart -g $RESOURCE_GROUP_NAME -n "${vm_name}" 
-        )&
+    az vm extension set \
+        -g $RESOURCE_GROUP_NAME \
+        -n customScript \
+        --vm-name $VM_MASTER_NAME \
+        --extension-instance-name serverInstall \
+        --publisher Microsoft.Azure.Extensions \
+        --protected-settings "${script}"
+}
+
+function __vm-apply-startup-nodes(){
+    local script_path=$(mktemp)
+    cat $SCRIPT_DIR/vm/common/*.sh >> $script_path
+    echo "sudo kubeadm join ${VM_MASTER_NAME}:6443 --token `__get-token` --discovery-token-ca-cert-hash sha256:`__get-ca-cert-hash`" >> $script_path
+    local script=$(__vm-create-script $script_path)
+
+    for vm_name in $(__get-vm-work-names)
+    do
+        az vm extension set \
+            -g $RESOURCE_GROUP_NAME \
+            -n customScript \
+            --vm-name $vm_name \
+            --extension-instance-name nodeInstall \
+            --publisher Microsoft.Azure.Extensions \
+            --protected-settings "${script}" &
     done
     wait
 }
+
 
 function _create() {
     __create-resource
@@ -117,10 +149,12 @@ function _create() {
     __create-vnet
     __create-subnet
 
-    __create-master-vms 
-    # __create-work-vms &
-    wait
-    __vm-extension-set 'k8s-serve'
+    __create-master-vms
+    # __create-work-vms
+
+    __vm-apply-startup-server
+    # __vm-apply-startup-nodes
+    _restart-vms
 }
 
 
@@ -151,12 +185,22 @@ function _start-vms() {
     wait
 }
 
+
+function _restart-vms() {
+    local vm_names=${@:-`__get-vm-names`}
+    for name in ${vm_names};
+    do
+        az vm restart -g $RESOURCE_GROUP_NAME -n "${name}"  &
+    done
+    wait
+}
+
+
 function _ssh() {
     vm="${1:-$VM_MASTER_NAME}"
     vm_ip="$(az vm show -d -g $RESOURCE_GROUP_NAME -n $vm --query publicIps -o tsv)"
     user="${2:-$USER}"
-    echo "${user}@${vm_ip}"
-    ssh "${user}@${vm_ip}"
+    ssh "${user}@${vm_ip}" "${@:3}"
 }
 
 function main () {

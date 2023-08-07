@@ -16,4 +16,4 @@ net.ipv4.ip_forward                 = 1
 EOF
 
 # Apply sysctl params without reboot
-# sudo sysctl --system
+sudo sysctl --system
