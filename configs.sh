@@ -10,4 +10,4 @@ SUBNET_NAME="k8sSubnetTest"
 VM_RANCHER='master'
 VM_SIZE='Standard_B1ms'
 LOCATION='eastus'
-VM_COUNT=0
+VM_COUNT=2

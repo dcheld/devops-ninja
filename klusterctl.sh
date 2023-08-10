@@ -80,7 +80,7 @@ function __create-work-vms() {
 }
 
 function __get-ca-cert-hash(){
-   _ssh $VM_MASTER_NAME $VM_USERNAME -qn\
+   _ssh $VM_MASTER_NAME $VM_USERNAME -qn \
         -t "openssl x509 -pubkey -in /etc/kubernetes/pki/ca.crt \
             | openssl rsa -pubin -outform der 2>/dev/null \
             | openssl dgst -sha256 -hex | sed 's/^.* //'" \
@@ -88,7 +88,8 @@ function __get-ca-cert-hash(){
 }
 
 function __get-token(){
-    _ssh $VM_MASTER_NAME $VM_USERNAME "kubeadm token list -o jsonpath='{.token}'" \
+    _ssh $VM_MASTER_NAME $VM_USERNAME -qn \
+        -t "kubeadm token list -o jsonpath='{.token}'" \
         | tail -1
 }
 
@@ -126,7 +127,6 @@ function __vm-apply-startup-server(){
 function __vm-apply-startup-nodes(){
     local script_path=$(mktemp)
     cat $SCRIPT_DIR/vm/common/*.sh >> $script_path
-    echo "sudo kubeadm join ${VM_MASTER_NAME}:6443 --token `__get-token` --discovery-token-ca-cert-hash sha256:`__get-ca-cert-hash`" >> $script_path
     local script=$(__vm-create-script $script_path)
 
     for vm_name in $(__get-vm-work-names)
@@ -142,6 +142,18 @@ function __vm-apply-startup-nodes(){
     wait
 }
 
+function __vm-connect-cluster(){
+    local token=$(__get-token)
+    local ca_cert_hash=$(__get-ca-cert-hash)
+    local script="sudo kubeadm join ${VM_MASTER_NAME}:6443 --token ${token} --discovery-token-ca-cert-hash sha256:${ca_cert_hash}"
+
+    for vm_name in $(__get-vm-work-names)
+    do
+        _ssh $vm_name $VM_USERNAME -qn \
+            -t "${script}" &
+    done
+    wait
+}
 
 function _create() {
     __create-resource
@@ -150,11 +162,13 @@ function _create() {
     __create-subnet
 
     __create-master-vms
-    # __create-work-vms
+    __create-work-vms
 
     __vm-apply-startup-server
-    # __vm-apply-startup-nodes
-    _restart-vms
+    _restart-vms $VM_MASTER_NAME
+    __vm-apply-startup-nodes
+    _restart-vms `__get-vm-work-names`
+    __vm-connect-cluster
 }
 
 
@@ -200,7 +214,7 @@ function _ssh() {
     vm="${1:-$VM_MASTER_NAME}"
     vm_ip="$(az vm show -d -g $RESOURCE_GROUP_NAME -n $vm --query publicIps -o tsv)"
     user="${2:-$USER}"
-    ssh "${user}@${vm_ip}" "${@:3}"
+    ssh -o "StrictHostKeyChecking=no" "${user}@${vm_ip}" "${@:3}"
 }
 
 function main () {
