@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
 
-mkdir -p /home/dcheld/.kube
-sudo cp /etc/kubernetes/admin.conf /home/dcheld/.kube/config
-sudo chown '1000:1000' /home/dcheld/.kube/config
+mkdir -p /home/{{user}}/.kube
+sudo cp /etc/kubernetes/admin.conf /home/{{user}}/.kube/config
+sudo chown {{user}}:{{user}} -R /home/{{user}}/.kube

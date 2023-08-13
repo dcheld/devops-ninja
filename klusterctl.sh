@@ -28,13 +28,24 @@ function __create-nsg(){
         --access Allow \
         --protocol Tcp
 
+    local my_ip=`curl -s ifconfig.me` 
     az network nsg rule create \
         -g $RESOURCE_GROUP_NAME \
         --nsg-name $NSG_NAME \
         --name AllowAnySSHInbound \
         --priority 110 \
-        --source-address-prefixes `curl -s ifconfig.me` \
+        --source-address-prefixes ${my_ip}\
         --destination-port-ranges 22 \
+        --access Allow \
+        --protocol Tcp
+
+    az network nsg rule create \
+        -g $RESOURCE_GROUP_NAME \
+        --nsg-name $NSG_NAME \
+        --name AllowKubernetes \
+        --priority 120 \
+        --source-address-prefixes ${my_ip} \
+        --destination-port-ranges 6443 \
         --access Allow \
         --protocol Tcp
 }
@@ -113,6 +124,11 @@ function __vm-create-script(){
 function __vm-apply-startup-server(){
     local script_path=$(mktemp)
     cat $SCRIPT_DIR/vm/common/*.sh $SCRIPT_DIR/vm/server/*.sh >> $script_path
+
+    __replace-file $script_path \
+        my_ip "$(__get-ip)" \
+        user $"${VM_USERNAME}"
+
     local script=$(__vm-create-script $script_path)
 
     az vm extension set \
@@ -122,14 +138,16 @@ function __vm-apply-startup-server(){
         --extension-instance-name serverInstall \
         --publisher Microsoft.Azure.Extensions \
         --protected-settings "${script}"
+
+    _restart-vms $VM_MASTER_NAME
 }
 
 function __vm-apply-startup-nodes(){
     local script_path=$(mktemp)
     cat $SCRIPT_DIR/vm/common/*.sh >> $script_path
     local script=$(__vm-create-script $script_path)
-
-    for vm_name in $(__get-vm-work-names)
+    local worker_names=$(__get-vm-work-names)
+    for vm_name in ${worker_names}
     do
         az vm extension set \
             -g $RESOURCE_GROUP_NAME \
@@ -140,17 +158,30 @@ function __vm-apply-startup-nodes(){
             --protected-settings "${script}" &
     done
     wait
+
+   _restart-vms ${worker_names}
 }
 
 function __vm-connect-cluster(){
-    local token=$(__get-token)
-    local ca_cert_hash=$(__get-ca-cert-hash)
-    local script="sudo kubeadm join ${VM_MASTER_NAME}:6443 --token ${token} --discovery-token-ca-cert-hash sha256:${ca_cert_hash}"
+    local script_path=$(mktemp)
+    cat $SCRIPT_DIR/vm/nodes/*.sh >> $script_path
+
+    __replace-file $script_path \
+        vm_master_name $"${VM_MASTER_NAME}" \
+        token "$(__get-token)" \
+        ca_cert_hash $"$(__get-ca-cert-hash)"
+
+    local script=$(__vm-create-script $script_path)
 
     for vm_name in $(__get-vm-work-names)
     do
-        _ssh $vm_name $VM_USERNAME -qn \
-            -t "${script}" &
+        az vm extension set \
+            -g $RESOURCE_GROUP_NAME \
+            -n customScript \
+            --vm-name $vm_name \
+            --extension-instance-name nodeConnect \
+            --publisher Microsoft.Azure.Extensions \
+            --protected-settings "${script}" &
     done
     wait
 }
@@ -165,9 +196,7 @@ function _create() {
     __create-work-vms
 
     __vm-apply-startup-server
-    _restart-vms $VM_MASTER_NAME
     __vm-apply-startup-nodes
-    _restart-vms `__get-vm-work-names`
     __vm-connect-cluster
 }
 
@@ -209,10 +238,32 @@ function _restart-vms() {
     wait
 }
 
+function __get-ip() {
+    vm="${1:-$VM_MASTER_NAME}"
+    az vm show -d -g $RESOURCE_GROUP_NAME -n $vm --query publicIps -o tsv
+}
+
+function __replace-file(){
+    local file_path=${1}
+    shift
+
+    local script="sed -i"
+    while (($#))
+    do
+        local expr=$1
+        shift
+        
+        local value=$1
+        shift
+
+        script="${script} -e 's/{{${expr}}}/${value}/g'"
+    done
+    script="$script $file_path"
+    eval "$script"
+}
 
 function _ssh() {
-    vm="${1:-$VM_MASTER_NAME}"
-    vm_ip="$(az vm show -d -g $RESOURCE_GROUP_NAME -n $vm --query publicIps -o tsv)"
+    vm_ip="$(__get-ip $1)"
     user="${2:-$USER}"
     ssh -o "StrictHostKeyChecking=no" "${user}@${vm_ip}" "${@:3}"
 }
